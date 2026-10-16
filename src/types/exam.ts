@@ -157,6 +157,9 @@ export interface ExamResult {
   // so the student knows how many questions they answered even
   // when the score itself is hidden.
   questions_answered? : number;
+  // TRUE when time ran out before the final submit arrived and the
+  // server graded the answers it had autosaved instead.
+  submitted_late?     : boolean;
 }
 
 // Full response envelope from POST /api/exams/:id/submit

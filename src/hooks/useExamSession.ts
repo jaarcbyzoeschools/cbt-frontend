@@ -120,8 +120,15 @@ interface QuestionsSuccessResponse {
     session_id  : number;
     started_at  : string;
     tab_switches: number;
+    // Answers the server autosaved earlier (absent on older backends)
+    saved_answers?: AnswerMap;
   };
 }
+
+// How long to wait after the last answer change before autosaving,
+// and how often to retry if a save failed (network blip, etc).
+const AUTOSAVE_DEBOUNCE_MS = 2_500;
+const AUTOSAVE_RETRY_MS    = 20_000;
 
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -194,6 +201,11 @@ export function useExamSession({
   const onSubmitErrorRef   = useRef(onSubmitError);
   const pauseTimerRef      = useRef(pauseTimer);
 
+  // Autosave bookkeeping
+  const lastSavedRef       = useRef<string>('{}');   // JSON of the last answers the server confirmed
+  const isSavingRef        = useRef<boolean>(false);
+  const autosaveStoppedRef = useRef<boolean>(false); // true once the server says time is up / session closed
+
   useEffect((): void => { onSubmitSuccessRef.current = onSubmitSuccess; }, [onSubmitSuccess]);
   useEffect((): void => { onSubmitErrorRef.current   = onSubmitError;   }, [onSubmitError]);
   useEffect((): void => { pauseTimerRef.current      = pauseTimer;      }, [pauseTimer]);
@@ -233,6 +245,17 @@ export function useExamSession({
             // page's wall-clock timer can reconcile against it
             // instead of trusting only localStorage.
             setStartedAt(response.data.session.started_at);
+
+            // Restore answers the server already has. On a fresh
+            // terminal localStorage is empty, so this is the only
+            // copy. Local answers win where both exist, since they
+            // may be newer than the last autosave.
+            const serverSaved = response.data.session.saved_answers ?? {};
+            if (Object.keys(serverSaved).length > 0) {
+              setAnswers((local: AnswerMap): AnswerMap => ({ ...serverSaved, ...local }));
+              setWasRestored(true);
+            }
+            lastSavedRef.current = JSON.stringify(serverSaved);
 
             // NEW — confirm this exam has genuinely been received
             // right here, now that questions are actually in state
@@ -285,6 +308,60 @@ export function useExamSession({
     void loadQuestions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examId]);
+
+
+  // ================================================================
+  //  SERVER AUTOSAVE
+  //
+  //  Sends the full answer set to the server shortly after every
+  //  change, and retries on a timer if a save failed. This means:
+  //    - a dead terminal loses at most a few seconds of work; the
+  //      student logs in on another PC and their answers come back
+  //    - if the final submit arrives late, the server grades these
+  //      saved answers instead of rejecting the exam
+  //  Failures are silent: answers are still in localStorage.
+  // ================================================================
+
+  const saveAnswersToServer = useCallback(async (): Promise<void> => {
+    if (questions.length === 0) return;
+    if (isSavingRef.current || isSubmittingRef.current || isSubmitted) return;
+    if (autosaveStoppedRef.current) return;
+
+    const snapshot = JSON.stringify(answers);
+    if (snapshot === lastSavedRef.current) return;
+
+    isSavingRef.current = true;
+    try {
+      const payload: StudentAnswer[] = Object.entries(answers).map(
+        ([questionIdStr, chosenOption]: [string, AnswerOption]): StudentAnswer => ({
+          question_id  : Number(questionIdStr),
+          chosen_option: chosenOption,
+        })
+      );
+      await axiosInstance.patch(`/api/exams/${examId}/session/answers`, { answers: payload });
+      lastSavedRef.current = snapshot;
+    } catch (thrown: unknown) {
+      // 409 = time is up or session closed: stop trying.
+      // 404 = backend without the autosave route yet: stop trying.
+      const status = extractAxiosStatus(thrown);
+      if (status === 409 || status === 404) autosaveStoppedRef.current = true;
+      // Anything else (network, 500) is retried by the interval below.
+    } finally {
+      isSavingRef.current = false;
+    }
+  }, [answers, examId, isSubmitted, questions.length]);
+
+  // Save shortly after each change
+  useEffect((): (() => void) => {
+    const id = window.setTimeout((): void => { void saveAnswersToServer(); }, AUTOSAVE_DEBOUNCE_MS);
+    return (): void => { window.clearTimeout(id); };
+  }, [saveAnswersToServer]);
+
+  // Safety net: retry periodically in case a save failed
+  useEffect((): (() => void) => {
+    const id = window.setInterval((): void => { void saveAnswersToServer(); }, AUTOSAVE_RETRY_MS);
+    return (): void => { window.clearInterval(id); };
+  }, [saveAnswersToServer]);
 
 
   // ================================================================

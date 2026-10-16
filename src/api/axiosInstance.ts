@@ -31,8 +31,12 @@ import type {
 
 // ── CONSTANTS ───────────────────────────────────────────────────
 
-// const BASE_URL   = 'http://10.30.60.2:5000' as const;
-const BASE_URL   = 'http://localhost:5000' as const;
+// Empty string = "same server that served this page". In production
+// Express serves the built frontend, so every terminal calls back to
+// whichever machine it loaded the app from — no IP to edit per deploy.
+// In development, vite.config.ts proxies /api and /uploads to the
+// backend. Set VITE_API_URL in .env only if the API lives elsewhere.
+const BASE_URL: string = import.meta.env.VITE_API_URL ?? '';
 
 const TIMEOUT_MS = 15_000 as const;
 
@@ -204,7 +208,7 @@ axiosInstance.interceptors.response.use(
         } else if (error.request !== undefined && error.response === undefined) {
             console.error(
                 '[axiosInstance] Network error — no response from server at',
-                BASE_URL,
+                BASE_URL || window.location.origin,
                 '\nVerify: CBT server is ON | LAN cable connected | Router powered'
             );
 

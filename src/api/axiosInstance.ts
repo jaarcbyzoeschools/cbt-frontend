@@ -31,7 +31,7 @@ import type {
 
 // ── CONSTANTS ───────────────────────────────────────────────────
 
-// const BASE_URL   = 'http://172.16.100.5:5000' as const;
+// const BASE_URL   = 'http://10.30.60.2:5000' as const;
 const BASE_URL   = 'http://localhost:5000' as const;
 
 const TIMEOUT_MS = 15_000 as const;

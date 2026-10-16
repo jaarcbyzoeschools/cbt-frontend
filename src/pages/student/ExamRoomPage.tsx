@@ -1,6 +1,12 @@
 // ================================================================
 //  CBT SYSTEM — EXAM ROOM PAGE
-
+//
+//  THIS REVISION — handleSubmitError now auto-navigates back to
+//  the dashboard after a definitive SESSION_EXPIRED rejection,
+//  instead of leaving the student stranded on a frozen 00:00
+//  screen with no path forward. See the comment inside
+//  handleSubmitError for why this was actually happening.
+// ================================================================
 
 import React, {
   useCallback,
@@ -69,12 +75,28 @@ const lsKey = {
   durationMs: (id: number): string => `exam_${id}_durationMs`,
 };
 
-function initWallClockTimer(examId: number, durationSeconds: number): void {
+function initWallClockTimer(examId: number, durationSeconds: number, serverStartedAtIso: string | null): void {
   if (durationSeconds <= 0) return;
-  const existingDuration = localStorage.getItem(lsKey.durationMs(examId));
-  if (existingDuration === null || existingDuration === '0') {
-    localStorage.setItem(lsKey.durationMs(examId), String(durationSeconds * 1000));
+  localStorage.setItem(lsKey.durationMs(examId), String(durationSeconds * 1000));
+
+  // Reconcile against the SERVER's real session start whenever it's
+  // available — never just "initialize if empty." A student on a
+  // fresh terminal (or with cleared/stale localStorage) would
+  // otherwise get a full-duration countdown reset on their screen
+  // while the server's actual clock, anchored to the true original
+  // start, keeps running underneath. That mismatch is what caused
+  // a legitimate on-time submission to be rejected as expired.
+  if (serverStartedAtIso !== null) {
+    const serverStartedAtMs = new Date(serverStartedAtIso).getTime();
+    if (!isNaN(serverStartedAtMs)) {
+      localStorage.setItem(lsKey.startedAt(examId), String(serverStartedAtMs));
+      return;
+    }
   }
+
+  // Server didn't provide a value (older backend, or a transient
+  // load issue) — fall back to the previous behavior: only set a
+  // local start time if one doesn't already exist.
   const existingStart = localStorage.getItem(lsKey.startedAt(examId));
   if (existingStart === null) {
     localStorage.setItem(lsKey.startedAt(examId), String(Date.now()));
@@ -142,7 +164,7 @@ function SessionExpiredBanner({ message }: { message: string }): React.JSX.Eleme
         <p className="text-[#991B1B] text-base font-bold">Submission Rejected — Time Expired</p>
         <p className="text-[#991B1B] text-sm mt-0.5 leading-relaxed">{message}</p>
         <p className="text-[#991B1B] text-sm mt-1 font-medium">
-          Please inform your teacher. Your progress has been saved.
+          Please inform your teacher. Your progress has been saved. Returning to your dashboard shortly…
         </p>
       </div>
     </div>
@@ -292,16 +314,32 @@ export default function ExamRoomPage(): React.JSX.Element {
   }, [examId, navigate]);
 
   const handleSubmitError = useCallback((message: string): void => {
-    // Mark if this is a session expired error — these are permanent
-    if (message.toLowerCase().includes('expired') ||
-        message.toLowerCase().includes('rejected')) {
-      isExpiredErrorRef.current = true;
-    }
+    const isExpired =
+      message.toLowerCase().includes('expired') ||
+      message.toLowerCase().includes('rejected');
+    isExpiredErrorRef.current = isExpired;
     setSubmitErrorBanner(message);
     setShowSubmitDialog(false);
     setShowBackWarning(false);
     isSubmittingRef.current = false;
-  }, []);
+
+    // A definitive SESSION_EXPIRED rejection means there is nothing
+    // left the student can do on this page — the countdown interval
+    // is already stopped by this point (cleared right before
+    // submitExam() was called), so without this she'd be stuck on a
+    // frozen 00:00 screen indefinitely, with no path forward except
+    // manually navigating away herself. Give her a few seconds to
+    // actually read why, then leave automatically.
+    if (isExpired && !hasNavigatedRef.current) {
+      setTimeout((): void => {
+        if (!hasNavigatedRef.current) {
+          hasNavigatedRef.current = true;
+          clearWallClockTimer(examId);
+          navigate('/student/lobby', { replace: true });
+        }
+      }, 6000);
+    }
+  }, [examId, navigate]);
 
 
   // ── useExamSession ───────────────────────────────────────────
@@ -322,6 +360,7 @@ export default function ExamRoomPage(): React.JSX.Element {
     answeredCount,
     flaggedIds,
     durationSeconds,
+    startedAt,
     isLoadingQuestions,
     loadError,
     wasRestored,
@@ -358,11 +397,11 @@ export default function ExamRoomPage(): React.JSX.Element {
     if (timerReadyRef.current) return;
     timerReadyRef.current = true;
 
-    initWallClockTimer(examId, durationSeconds);
+    initWallClockTimer(examId, durationSeconds, startedAt);
 
     const remaining = computeSecondsRemaining(examId, durationSeconds);
     setSecondsRemaining(remaining);
-  }, [examId, durationSeconds, questions.length]);
+  }, [examId, durationSeconds, questions.length, startedAt]);
 
 
   // ── Countdown interval ───────────────────────────────────────
@@ -556,7 +595,9 @@ export default function ExamRoomPage(): React.JSX.Element {
           </div>
           <div className="min-w-0">
             <p className="text-[#0F172A] text-base font-bold truncate">
-              {student?.class_name ?? ''} · Exam in Progress
+              {/* {student?.class_name ?? ''} */}
+              
+               DLB · Exam in Progress
             </p>
             <p className="text-[#6B7280] text-sm">
               Question {currentIndex + 1} of {totalQuestions}

@@ -2,7 +2,16 @@
 //  CBT SYSTEM — EXAM SESSION ORCHESTRATION HOOK
 //  File    : src/hooks/useExamSession.ts
 //
-
+//  THIS REVISION — the server already returns its own real
+//  session.started_at in every getExamQuestions response, but it
+//  was only ever read for tab_switches, never surfaced further.
+//  ExamRoomPage.tsx's wall-clock timer had no way to reconcile
+//  against it, so a student landing on a terminal with empty (or
+//  stale) localStorage would see a freshly-reset countdown while
+//  the server's real clock, anchored to the true original start
+//  time, kept running underneath. Now startedAt is exposed here so
+//  the page can always anchor to the server's truth.
+// ================================================================
 
 import {
   useCallback,
@@ -59,6 +68,7 @@ export interface UseExamSessionReturn {
 
   // Timer
   durationSeconds    : number;   // 0 until questions API responds
+  startedAt          : string | null; // server's real session start (ISO) — NEW
 
   // Tab-switch audit (Improvement 3)
   tabSwitches        : number;   // live count — increments on every tab hide
@@ -158,6 +168,7 @@ export function useExamSession({
   const [isLoadingQuestions, setIsLoadingQuestions] = useState<boolean>(true);
   const [loadError,          setLoadError]          = useState<string | null>(null);
   const [durationMinutes,    setDurationMinutes]    = useState<number>(0);
+  const [startedAt,          setStartedAt]          = useState<string | null>(null);
 
   // Improvement 3: tab-switch counter
   const [tabSwitches, setTabSwitches] = useState<number>(0);
@@ -218,6 +229,23 @@ export function useExamSession({
           // count immediately rather than starting from 0.
           if (response.data.session !== undefined) {
             setTabSwitches(response.data.session.tab_switches);
+            // NEW — surface the server's real start time so the
+            // page's wall-clock timer can reconcile against it
+            // instead of trusting only localStorage.
+            setStartedAt(response.data.session.started_at);
+
+            // NEW — confirm this exam has genuinely been received
+            // right here, now that questions are actually in state
+            // and about to render. This is what lets the server
+            // tell a real crash-recovery retry apart from "the
+            // response never arrived the first time" (see migration
+            // 011 and the comment in examController.js's
+            // getExamQuestions for the full reasoning). Fire-and-
+            // forget, same posture as the tab-switch ping below —
+            // never block the exam over this.
+            void axiosInstance
+              .patch(`/api/exams/${examId}/session/confirm-loaded`)
+              .catch((): void => { /* silent — non-critical */ });
           }
         } else {
           setLoadError('Failed to load exam questions. Please contact your teacher.');
@@ -461,6 +489,7 @@ export function useExamSession({
     result,
     wasRestored,
     durationSeconds,
+    startedAt,
     tabSwitches,
     selectAnswer,
     navigateTo,

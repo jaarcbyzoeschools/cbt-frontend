@@ -113,7 +113,8 @@ export function StudentSidebar({ isOpen, onClose }: StudentSidebarProps): React.
             )}
             <div className="min-w-0 flex-1">
               <p className="text-[#0B1F14] text-base font-bold truncate leading-tight">{student.full_name}</p>
-              <p className="text-[#6B8479] text-sm truncate mt-0.5">{student.class_name}</p>
+              {/* <p className="text-[#6B8479] text-sm truncate mt-0.5">{student.class_name}</p> */}
+              <p>DLB</p>
             </div>
           </div>
         </div>

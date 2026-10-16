@@ -3,12 +3,20 @@
 //  File    : src/pages/teacher/GradeEntryPage.tsx
 //  Design  : Vibrant Institutional Light Mode (matches existing pages)
 //
-//  New page — closes the last gap in the three-component grading
-//  work: the backend (submitOtherScore, submitTestScore,
-//  getGradeEntrySheet) existed with nothing rendering it. This is
-//  that screen.
+//  THIS REVISION — two additions:
+//    1. A Branch filter for Super Admin only, reusing the SAME
+//       global Branch Context switcher already used by
+//       ReportCardPanel.tsx (components/layout/StaffSidebar's
+//       useBranchContext) rather than building a second, redundant
+//       branch dropdown directly on this page. Admin and teacher
+//       never see this — they're always scoped to their own branch
+//       server-side regardless of what they'd send, per the
+//       backend fix in reportCardController.js.
+//    2. A Name filter — plain client-side substring search over
+//       the already-fetched roster, since the whole point is
+//       narrowing what's already on screen, not a new API call.
 //
-//  Role behavior:
+//  Role behavior (unchanged otherwise):
 //    - Plain teacher: subject picker restricted to their own
 //      assigned subjects (GET /api/teacher/my-subjects), matching
 //      every other subject-scoped screen in this app.
@@ -30,6 +38,7 @@
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useState,
 }                        from 'react';
 import {
@@ -44,11 +53,14 @@ import {
   Users,
   X,
   Save,
+  Search,
+  Building2,
 }                        from 'lucide-react';
 
 import axiosInstance               from '../../api/axiosInstance';
 import { useAuth }                 from '../../context/AuthContext';
 import { useCurriculumConstraint } from '../../hooks/useCurriculumConstraint';
+import { useBranchContext }        from '../../../components/layout/StaffSidebar';
 import type {
   ClassLevel,
   Department,
@@ -231,6 +243,14 @@ function ScoreCell({
 export default function GradeEntryPage(): React.JSX.Element {
   const { role } = useAuth();
   const isRestrictedTeacher = role === 'teacher';
+  const isSuperAdmin = role === 'super_admin';
+
+  // Branch filter — Super Admin only. Reuses the same global
+  // Branch Context switcher already used by ReportCardPanel.tsx,
+  // rather than a second dropdown local to this page. Admin and
+  // teacher are always scoped to their own branch server-side
+  // regardless of what (if anything) this sends.
+  const activeBranch = useBranchContext();
 
   const [activePeriod,    setActivePeriod]    = useState<{ session: string; term: number; display: string } | null>(null);
   const [periodLoading,   setPeriodLoading]   = useState<boolean>(true);
@@ -250,6 +270,10 @@ export default function GradeEntryPage(): React.JSX.Element {
   const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(false);
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [sheetError,   setSheetError]   = useState<string | null>(null);
+
+  // Name filter — plain client-side search, narrowing the already-
+  // fetched roster rather than issuing a new request.
+  const [nameFilter, setNameFilter] = useState<string>('');
 
   const [toast, setToast] = useState<Toast | null>(null);
 
@@ -326,11 +350,18 @@ export default function GradeEntryPage(): React.JSX.Element {
     setIsLoadingSheet(true);
     setSheetError(null);
     try {
+      const params = new URLSearchParams();
+      params.set('subject_id', selectedSubjectId);
+      params.set('academic_session', activePeriod.session);
+      params.set('term', String(activePeriod.term));
+      // Only super_admin ever sends a branch_id — admin/teacher are
+      // always scoped to their own branch server-side regardless.
+      if (isSuperAdmin && activeBranch !== null) {
+        params.set('branch_id', String(activeBranch.id));
+      }
+
       const res = await axiosInstance.get<GradeEntrySheetResponse>(
-        `/api/teacher/report-cards/grade-entry-sheet` +
-        `?subject_id=${selectedSubjectId}` +
-        `&academic_session=${encodeURIComponent(activePeriod.session)}` +
-        `&term=${activePeriod.term}`
+        `/api/teacher/report-cards/grade-entry-sheet?${params.toString()}`
       );
       if (res.data.success) setSheet(res.data);
     } catch (thrown: unknown) {
@@ -344,9 +375,20 @@ export default function GradeEntryPage(): React.JSX.Element {
     } finally {
       setIsLoadingSheet(false);
     }
-  }, [selectedSubjectId, activePeriod]);
+  }, [selectedSubjectId, activePeriod, isSuperAdmin, activeBranch]);
 
   useEffect((): void => { void fetchSheet(); }, [fetchSheet]);
+
+  // Reset the name filter whenever the subject changes — a filter
+  // left over from a previous subject's roster would be confusing.
+  useEffect((): void => { setNameFilter(''); }, [selectedSubjectId]);
+
+  const filteredStudents = useMemo((): GradeEntryStudent[] => {
+    if (sheet === null) return [];
+    const needle = nameFilter.trim().toLowerCase();
+    if (needle === '') return sheet.students;
+    return sheet.students.filter((s) => s.full_name.toLowerCase().includes(needle));
+  }, [sheet, nameFilter]);
 
   const saveScore = async (
     endpoint  : 'test-score' | 'other-score',
@@ -431,12 +473,27 @@ export default function GradeEntryPage(): React.JSX.Element {
             Enter Test scores for subjects with no CBT sitting, and the Other (10%) component for every student.
           </p>
         </div>
-        {activePeriod !== null && (
-          <div className="flex items-center gap-2 px-3.5 py-2 bg-[#E7FBEE] border border-[#86EFAC] rounded-xl">
-            <Calendar size={14} className="text-[#15803D] flex-shrink-0" />
-            <p className="text-[#15803D] text-sm font-semibold">{activePeriod.display}</p>
-          </div>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {isSuperAdmin && (
+            <div className={[
+              'flex items-center gap-2 px-3.5 py-2 rounded-xl border',
+              activeBranch !== null
+                ? 'bg-[#EFF6FF] border-[#BAE6FD]'
+                : 'bg-[#FFFBEB] border-[#FCD34D]',
+            ].join(' ')}>
+              <Building2 size={14} className={activeBranch !== null ? 'text-[#0369A1]' : 'text-[#92400E]'} />
+              <p className={`text-sm font-semibold ${activeBranch !== null ? 'text-[#0369A1]' : 'text-[#92400E]'}`}>
+                {activeBranch !== null ? activeBranch.name : 'All branches (select one in the sidebar to narrow)'}
+              </p>
+            </div>
+          )}
+          {activePeriod !== null && (
+            <div className="flex items-center gap-2 px-3.5 py-2 bg-[#E7FBEE] border border-[#86EFAC] rounded-xl">
+              <Calendar size={14} className="text-[#15803D] flex-shrink-0" />
+              <p className="text-[#15803D] text-sm font-semibold">{activePeriod.display}</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {!periodLoading && activePeriod === null && (
@@ -544,7 +601,7 @@ export default function GradeEntryPage(): React.JSX.Element {
 
       {selectedSubjectId !== '' && (
         <div className="bg-white border border-[#D7F2E0] rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-[#D7F2E0] bg-[#F4FBF6]">
+          <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-[#D7F2E0] bg-[#F4FBF6] flex-wrap">
             <div className="flex items-center gap-3">
               <Users size={17} className="text-[#3D5347]" />
               <h2 className="text-[#0B1F14] text-base font-bold">
@@ -552,19 +609,33 @@ export default function GradeEntryPage(): React.JSX.Element {
               </h2>
               {sheet !== null && (
                 <span className="px-2.5 py-0.5 rounded-full bg-[#E7FBEE] border border-[#86EFAC] text-[#15803D] text-sm font-semibold">
-                  {sheet.count} students
+                  {nameFilter.trim() !== '' ? `${filteredStudents.length} of ${sheet.count}` : `${sheet.count} students`}
                 </span>
               )}
             </div>
-            <button
-              type      = "button"
-              onClick   = {() => void fetchSheet()}
-              disabled  = {isLoadingSheet}
-              className = "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-[#3D5347] bg-white border border-[#D7F2E0] hover:border-[#22B85C] transition-all disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={isLoadingSheet ? 'animate-spin' : ''} />
-              Refresh
-            </button>
+            <div className="flex items-center gap-2">
+              {sheet !== null && sheet.students.length > 0 && (
+                <div className="relative">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B8479] pointer-events-none" />
+                  <input
+                    type        = "text"
+                    value       = {nameFilter}
+                    onChange    = {(e) => setNameFilter(e.target.value)}
+                    placeholder = "Search by name…"
+                    className   = "pl-9 pr-3 py-2 bg-white border border-[#D7F2E0] rounded-xl text-sm text-[#0B1F14] placeholder:text-[#6B8479] focus:outline-none focus:border-[#4AE17A] transition-all w-48"
+                  />
+                </div>
+              )}
+              <button
+                type      = "button"
+                onClick   = {() => void fetchSheet()}
+                disabled  = {isLoadingSheet}
+                className = "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-[#3D5347] bg-white border border-[#D7F2E0] hover:border-[#22B85C] transition-all disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={isLoadingSheet ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+            </div>
           </div>
 
           {isLoadingSheet && (
@@ -588,7 +659,20 @@ export default function GradeEntryPage(): React.JSX.Element {
             </div>
           )}
 
-          {!isLoadingSheet && sheet !== null && sheet.students.length > 0 && (
+          {!isLoadingSheet && sheet !== null && sheet.students.length > 0 && filteredStudents.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-16 text-center px-6">
+              <p className="text-[#0B1F14] text-base font-bold">No students match "{nameFilter}"</p>
+              <button
+                type      = "button"
+                onClick   = {() => setNameFilter('')}
+                className = "text-[#15803D] text-sm underline mt-1 hover:opacity-80"
+              >
+                Clear search
+              </button>
+            </div>
+          )}
+
+          {!isLoadingSheet && sheet !== null && filteredStudents.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -604,7 +688,7 @@ export default function GradeEntryPage(): React.JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {sheet.students.map((student, i) => {
+                  {filteredStudents.map((student, i) => {
                     const isEven = i % 2 === 0;
                     return (
                       <tr

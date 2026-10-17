@@ -240,6 +240,9 @@ export interface ScoreboardRow {
   readonly total_questions : number;
   readonly correct_answers : number;
   readonly score_percentage: number;
+  // TRUE when the student's time ran out before the final submit
+  // arrived, so only their autosaved answers were graded.
+  readonly submitted_late? : boolean;
   // ── Phase 1: manual score composite ──────────────────────────
   // When non-null, this is the authoritative display score.
   // score_percentage remains the raw CBT-only value for audit.

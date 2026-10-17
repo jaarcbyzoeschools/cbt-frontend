@@ -465,6 +465,16 @@ export default function ResultPage(): React.JSX.Element {
           )}
         </div>
 
+        {/* ── Late submission note ──────────────────────────── */}
+        {result.submitted_late === true && (
+          <div className="mb-4 rounded-xl border border-[#FCD34D] bg-[#FFFBEB] px-4 py-3 text-sm text-[#92400E]">
+            <p className="font-semibold">Your time ran out before you submitted.</p>
+            <p className="mt-0.5">
+              Your exam was still recorded. The answers saved before time ended were graded.
+            </p>
+          </div>
+        )}
+
         {/* ── Branch render ─────────────────────────────────── */}
         {showFullScore && result.correct_answers !== null && result.score_percentage !== null ? (
           <FullResultView

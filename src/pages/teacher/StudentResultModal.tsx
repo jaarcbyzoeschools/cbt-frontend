@@ -47,6 +47,7 @@ interface ResultSummary {
   highest_score     : number | null;
   lowest_score      : number | null;
   total_tab_switches: number;
+  late_submissions? : number;
 }
 
 interface ResultRow {
@@ -65,6 +66,7 @@ interface ResultRow {
   weighted_score    : number | null;
   score_weight      : number | null;
   tab_switches      : number;
+  submitted_late?   : boolean;
   submitted_at      : string;
 }
 
@@ -309,6 +311,14 @@ export default function StudentResultModal({
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#FEF2F2] border border-[#FCA5A5] text-[#991B1B] text-sm font-semibold">
                                       <EyeOff size={10} />
                                       {r.tab_switches}
+                                    </span>
+                                  )}
+                                  {r.submitted_late === true && (
+                                    <span
+                                      title="Time ran out before this exam was submitted. Only the answers saved before time ended were graded."
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#FEF3C7] border border-[#FCD34D] text-[#92400E] text-sm font-semibold"
+                                    >
+                                      Late
                                     </span>
                                   )}
                                 </div>

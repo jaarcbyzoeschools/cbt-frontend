@@ -134,13 +134,14 @@ function PapersTab({
     try {
       if (form.id === null) {
         await axiosInstance.post<PaperResponse>(`/api/training/batches/${batch.id}/papers`, body);
-        notify({ type: 'success', message: 'Paper created. Upload its questions next.' });
       } else {
         await axiosInstance.patch<PaperResponse>(`/api/training/papers/${form.id}`, body);
-        notify({ type: 'success', message: 'Paper updated.' });
       }
-      setForm(null);
+      // Refresh first, so the list is up to date before the dialog
+      // closes (the next "Add Paper" then numbers correctly).
       await reload();
+      setForm(null);
+      notify({ type: 'success', message: form.id === null ? 'Paper created. Upload its questions next.' : 'Paper updated.' });
     } catch (err: unknown) {
       setFormError(apiError(err, 'Failed to save paper.'));
     } finally {
@@ -152,8 +153,8 @@ function PapersTab({
     setBusy(p.id);
     try {
       await axiosInstance.post(`/api/training/papers/${p.id}/toggle`, { is_active: !p.is_active });
-      notify({ type: 'success', message: p.is_active ? `"${p.title}" closed.` : `"${p.title}" is now open to candidates.` });
       await reload();
+      notify({ type: 'success', message: p.is_active ? `"${p.title}" closed.` : `"${p.title}" is now open to candidates.` });
     } catch (err: unknown) {
       notify({ type: 'error', message: apiError(err, 'Failed to update paper.') });
     } finally {
@@ -170,6 +171,7 @@ function PapersTab({
         `/api/upload/questions?exam_id=${p.id}`, fd,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       );
+      await reload();
       notify({ type: 'success', message: `${res.data.inserted_count} question(s) added to "${p.title}".` });
       if (res.data.error_count > 0 && Array.isArray(res.data.row_errors)) {
         setUploadErrors({
@@ -177,7 +179,6 @@ function PapersTab({
           lines: res.data.row_errors.map((r) => `Row ${r.row ?? '?'}: ${(r.errors ?? []).join('; ')}`),
         });
       }
-      await reload();
     } catch (err: unknown) {
       notify({ type: 'error', message: apiError(err, 'Upload failed.') });
     } finally {
@@ -204,10 +205,10 @@ function PapersTab({
     setBusy(clearTarget.id);
     try {
       await axiosInstance.delete(`/api/training/papers/${clearTarget.id}/questions`);
+      await reload();
       notify({ type: 'success', message: `Questions removed from "${clearTarget.title}". It has been closed.` });
       setClearTarget(null);
       setViewPaper(null);
-      await reload();
     } catch (err: unknown) {
       notify({ type: 'error', message: apiError(err, 'Failed to clear questions.') });
       setClearTarget(null);
@@ -221,9 +222,9 @@ function PapersTab({
     setBusy(deleteTarget.id);
     try {
       await axiosInstance.delete(`/api/training/papers/${deleteTarget.id}`);
+      await reload();
       notify({ type: 'success', message: `"${deleteTarget.title}" deleted.` });
       setDeleteTarget(null);
-      await reload();
     } catch (err: unknown) {
       notify({ type: 'error', message: apiError(err, 'Failed to delete paper.') });
       setDeleteTarget(null);
@@ -252,9 +253,9 @@ function PapersTab({
       const res = await axiosInstance.post<{ papers_copied: number; questions_copied: number }>(
         `/api/training/batches/${batch.id}/copy-papers`, { from_batch_id: Number(copyFrom) }
       );
+      await reload();
       notify({ type: 'success', message: `Copied ${res.data.papers_copied} paper(s) with ${res.data.questions_copied} questions. Open them when ready.` });
       setCopyOpen(false);
-      await reload();
     } catch (err: unknown) {
       notify({ type: 'error', message: apiError(err, 'Failed to copy papers.') });
     } finally {
@@ -529,9 +530,9 @@ function CandidatesTab({
       const res = await axiosInstance.post<CandidateResponse>(`/api/training/batches/${batch.id}/candidates`, {
         full_name: quick.full_name, phone: quick.phone, gender: quick.gender || null,
       });
+      await reload();
       notify({ type: 'success', message: `${res.data.candidate.full_name} added — PIN ${res.data.candidate.login_pin}` });
       setQuick(emptyCandidate);
-      await reload();
     } catch (err: unknown) {
       notify({ type: 'error', message: apiError(err, 'Failed to add candidate.') });
     } finally {
@@ -548,8 +549,8 @@ function CandidatesTab({
         `/api/training/batches/${batch.id}/candidates/upload`, fd,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       );
-      notify({ type: 'success', message: `${res.data.created_count} candidate(s) added with new PINs.` });
       await reload();
+      notify({ type: 'success', message: `${res.data.created_count} candidate(s) added with new PINs.` });
     } catch (err: unknown) {
       const data = (err as { response?: { data?: { errors?: UploadCandidatesError[] } } })?.response?.data;
       if (Array.isArray(data?.errors) && data.errors.length > 0) setUploadErrors(data.errors);
@@ -570,9 +571,9 @@ function CandidatesTab({
         full_name: edit.full_name, phone: edit.phone, email: edit.email,
         gender: edit.gender || null, is_active: edit.is_active,
       });
+      await reload();
       notify({ type: 'success', message: 'Candidate updated.' });
       setEdit(null);
-      await reload();
     } catch (err: unknown) {
       setFormError(apiError(err, 'Failed to update candidate.'));
     } finally {
@@ -585,9 +586,9 @@ function CandidatesTab({
     setBusy('delete');
     try {
       await axiosInstance.delete(`/api/training/candidates/${deleteTarget.id}`);
+      await reload();
       notify({ type: 'success', message: `${deleteTarget.full_name} removed.` });
       setDeleteTarget(null);
-      await reload();
     } catch (err: unknown) {
       notify({ type: 'error', message: apiError(err, 'Failed to remove candidate.') });
       setDeleteTarget(null);

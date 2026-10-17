@@ -128,7 +128,7 @@ export default function PromoteStudentsPanel(): React.JSX.Element {
   const setRowDestination = (studentId: number, patch: Partial<RowDestination>): void => {
     setDestinations((prev) => ({
       ...prev,
-      [studentId]: { toClassId: '', toDeptId: '', ...prev[studentId], ...patch },
+      [studentId]: { ...(prev[studentId] ?? { toClassId: '', toDeptId: '' }), ...patch },
     }));
   };
 

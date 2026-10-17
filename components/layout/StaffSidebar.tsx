@@ -45,6 +45,7 @@ import {
   Layers,
   PenLine,
   ClipboardCheck,
+  Award,
 }                              from 'lucide-react';
 
 import { useAuth }             from '../../src/context/AuthContext';
@@ -112,6 +113,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Classes & Departments',   path: '/dashboard/admin/classes',       icon: <BookOpen        size={18} /> },
       { label: 'Class Arms',              path: '/dashboard/admin/arms',          icon: <Layers          size={18} /> },
       { label: 'Data Completeness',       path: '/dashboard/admin/completeness', icon: <ClipboardCheck  size={18} /> },
+      { label: 'Training Courses',        path: '/dashboard/admin/training',      icon: <Award           size={18} /> },
     ],
   },
   {

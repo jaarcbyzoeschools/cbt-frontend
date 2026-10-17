@@ -86,6 +86,10 @@ function StudentSessionLoader(): React.JSX.Element {
 export function StudentRoute(): React.JSX.Element {
   const { isAuthenticated, isLoadingSession, role } = useAuth();
   const location = useLocation();
+  // Training candidates log in on their own page
+  const loginPath = location.pathname.startsWith('/training')
+    ? '/login/training'
+    : '/login/student';
 
   // ── Guard 1: Session still loading ────────────────────────────
   // Hold render until the silent /api/auth/student/me call in
@@ -101,7 +105,7 @@ export function StudentRoute(): React.JSX.Element {
   if (!isAuthenticated) {
     return (
       <Navigate
-        to="/login/student"
+        to={loginPath}
         replace
         state={{ from: location.pathname }}
       />
@@ -114,7 +118,7 @@ export function StudentRoute(): React.JSX.Element {
   if (role !== 'student') {
     return (
       <Navigate
-        to="/login/student"
+        to={loginPath}
         replace
         state={{ from: location.pathname }}
       />

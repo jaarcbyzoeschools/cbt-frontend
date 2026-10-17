@@ -433,6 +433,15 @@ export default function StudentLoginPage(): React.JSX.Element {
                 Staff administration portal →
               </button>
             </div>
+            <div className="mt-2 text-center">
+              <button
+                type      = "button"
+                onClick   = {() => navigate('/login/training')}
+                className = "text-[#6B8479] text-sm hover:text-[#15803D] transition-colors font-medium"
+              >
+                Training course candidate? Log in here →
+              </button>
+            </div>
               <div className="mt-2 flex items-center justify-center text-center">
                 <p
                   

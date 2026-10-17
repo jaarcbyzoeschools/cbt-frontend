@@ -76,6 +76,14 @@ export interface Student {
   readonly department_name : string;
   readonly branch_id       : number;
   readonly branch_name     : string;
+  // ── Training-course candidates (non-school) ──────────────────
+  // Candidates share the student session so the exam room works for
+  // both. For them, class_name = course name, department_name = batch.
+  readonly participant_type?: 'student' | 'candidate';
+  readonly course_id?       : number;
+  readonly course_name?     : string;
+  readonly batch_id?        : number;
+  readonly batch_name?      : string;
 }
 
 

@@ -64,6 +64,20 @@ const  ClassArmsPage = React.lazy(
   () =>import('./pages/admin/ClassArmsPage')
 )
 
+// ── Training courses (non-school exams) ──────────────────────────
+const TrainingCoursesPage = React.lazy(
+  () => import('./pages/admin/training/TrainingCoursesPage')
+);
+const TrainingBatchPage = React.lazy(
+  () => import('./pages/admin/training/TrainingBatchPage')
+);
+const TrainingLoginPage = React.lazy(
+  () => import('./pages/auth/TrainingLoginPage')
+);
+const CandidateLobbyPage = React.lazy(
+  () => import('./pages/training/CandidateLobbyPage')
+);
+
 const DataCompletenessPage = React.lazy(
   () => import('./pages/admin/DataCompletenessPage')
 )
@@ -185,6 +199,10 @@ export default function App(): React.JSX.Element {
           path    = "/login/student"
           element = {<StudentLoginPage />}
         />
+        <Route
+          path    = "/login/training"
+          element = {<TrainingLoginPage />}
+        />
 
         {/* -- STAFF PROTECTED ROUTES ---------------------------- */}
 
@@ -242,6 +260,14 @@ export default function App(): React.JSX.Element {
                <Route
                 path    = "/dashboard/admin/completeness"
                 element = {<DataCompletenessPage />}
+              />
+              <Route
+                path    = "/dashboard/admin/training"
+                element = {<TrainingCoursesPage />}
+              />
+              <Route
+                path    = "/dashboard/admin/training/batches/:batchId"
+                element = {<TrainingBatchPage />}
               />
             </Route>
           </Route>
@@ -320,6 +346,12 @@ export default function App(): React.JSX.Element {
           <Route
             path    = "/student/result"
             element = {<ResultPage />}
+          />
+
+          {/* -- Training-course candidates (outside, non-school) -- */}
+          <Route
+            path    = "/training/lobby"
+            element = {<CandidateLobbyPage />}
           />
         </Route>
 

@@ -1510,6 +1510,14 @@ export default function ScoreboardPage(): React.JSX.Element {
                         <span className="text-[#6B8479] text-sm">
                           {formatSubmittedAt(row.submitted_at)}
                         </span>
+                        {row.submitted_late === true && (
+                          <span
+                            title="Time ran out before this exam was submitted. Only the answers saved before time ended were graded."
+                            className="ml-2 inline-flex items-center rounded-full bg-[#FEF3C7] px-2 py-0.5 text-[11px] font-semibold text-[#92400E]"
+                          >
+                            Late
+                          </span>
+                        )}
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-1.5">

@@ -41,7 +41,6 @@ import {
 import { useAuth }           from '../../context/AuthContext';
 import {
   getScoreColour,
-  formatScorePercentage,
   SCORE_THRESHOLDS,
 }                            from '../../utils/scoreColour';
 import { formatSubmittedAt } from '../../utils/timeFormatter';

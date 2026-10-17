@@ -32,7 +32,6 @@ import {
   Calendar,
   Mail,
   BookOpen,
-  ChevronDown,
   Star,
   Award,
 }                       from 'lucide-react';

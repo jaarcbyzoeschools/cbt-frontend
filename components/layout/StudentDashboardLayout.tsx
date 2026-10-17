@@ -5,7 +5,11 @@
 
 import React, { useEffect, useState } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
-import { GraduationCap, CalendarDays, BookOpenCheck, Menu } from 'lucide-react';
+import { Menu } from 'lucide-react';
+// The Class / Term / Session info bar below is switched off. To switch it
+// back on: re-import GraduationCap, CalendarDays, BookOpenCheck from
+// lucide-react, drop the leading _ from _classArm/_term/_session, and
+// uncomment the JSX block.
 
 import axiosInstance from '../../src/api/axiosInstance';
 import StudentSidebar from './StudentSidebar';
@@ -28,9 +32,9 @@ interface ActivePeriodResponse {
 const TERM_WORDS: Record<number, string> = { 1: 'FIRST TERM', 2: 'SECOND TERM', 3: 'THIRD TERM' };
 
 function StudentPortalLayout(): React.JSX.Element {
-  const [classArm, setClassArm]   = useState<string>('');
-  const [term, setTerm]           = useState<string>('');
-  const [session, setSession]     = useState<string>('');
+  const [_classArm, setClassArm]  = useState<string>('');
+  const [_term, setTerm]          = useState<string>('');
+  const [_session, setSession]    = useState<string>('');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
   useEffect((): void => {

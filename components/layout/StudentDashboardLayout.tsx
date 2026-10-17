@@ -4,11 +4,13 @@
 
 
 import React, { useEffect, useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Navigate, Outlet } from 'react-router-dom';
 import { GraduationCap, CalendarDays, BookOpenCheck, Menu } from 'lucide-react';
 
 import axiosInstance from '../../src/api/axiosInstance';
 import StudentSidebar from './StudentSidebar';
+import { useAuth } from '../../src/context/AuthContext';
+import { isCandidate, TRAINING_LOBBY_PATH } from '../../src/utils/participant';
 
 
 interface MyProfileResponse {
@@ -25,7 +27,7 @@ interface ActivePeriodResponse {
 
 const TERM_WORDS: Record<number, string> = { 1: 'FIRST TERM', 2: 'SECOND TERM', 3: 'THIRD TERM' };
 
-export default function StudentDashboardLayout(): React.JSX.Element {
+function StudentPortalLayout(): React.JSX.Element {
   const [classArm, setClassArm]   = useState<string>('');
   const [term, setTerm]           = useState<string>('');
   const [session, setSession]     = useState<string>('');
@@ -106,4 +108,13 @@ export default function StudentDashboardLayout(): React.JSX.Element {
       </div>
     </div>
   );
+}
+
+
+// Training-course candidates have no student portal (no class, term,
+// report card…) — send them to their own lobby instead.
+export default function StudentDashboardLayout(): React.JSX.Element {
+  const { student } = useAuth();
+  if (isCandidate(student)) return <Navigate to={TRAINING_LOBBY_PATH} replace />;
+  return <StudentPortalLayout />;
 }

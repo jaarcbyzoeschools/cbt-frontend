@@ -22,6 +22,7 @@
 // ================================================================
 
 import axios from 'axios';
+import { storedSessionIsCandidate } from '../utils/participant';
 import type {
     AxiosInstance,
     AxiosError,
@@ -149,6 +150,8 @@ axiosInstance.interceptors.response.use(
                     const wasStudentSession =
                         localStorage.getItem(STUDENT_TOKEN_KEY) !== null;
 
+                    const wasCandidateSession = storedSessionIsCandidate();
+
                     const keysToRemove = Object.keys(localStorage).filter(
                         (key) => key.startsWith('cbt_') || key.startsWith('exam_')
                     );
@@ -159,7 +162,7 @@ axiosInstance.interceptors.response.use(
 
                     if (!alreadyOnLogin) {
                         const loginPath = wasStudentSession
-                            ? '/login/student'
+                            ? (wasCandidateSession ? '/login/training' : '/login/student')
                             : '/login/staff';
                         window.location.href = loginPath;
                     }

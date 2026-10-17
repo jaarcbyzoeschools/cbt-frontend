@@ -38,6 +38,7 @@ import { useExamSession }  from '../../hooks/useExamSession';
 import { useAuth }         from '../../context/AuthContext';
 import type { Question }   from '../../types/exam';
 import { formatCountdown } from '../../utils/timeFormatter';
+import { lobbyPathFor }    from '../../utils/participant';
 
 
 // ================================================================
@@ -278,6 +279,8 @@ export default function ExamRoomPage(): React.JSX.Element {
   const { examId: examIdParam } = useParams<{ examId: string }>();
   const navigate                = useNavigate();
   const { student }             = useAuth();
+  // Training candidates go back to their own lobby
+  const lobbyPath = lobbyPathFor(student);
 
   const examId = parseInt(examIdParam ?? '0', 10);
 
@@ -309,9 +312,9 @@ export default function ExamRoomPage(): React.JSX.Element {
     if (!hasNavigatedRef.current) {
       hasNavigatedRef.current = true;
       clearWallClockTimer(examId);
-      navigate('/student/lobby', { replace: true, state: { result } });
+      navigate(lobbyPath, { replace: true, state: { result } });
     }
-  }, [examId, navigate]);
+  }, [examId, navigate, lobbyPath]);
 
   const handleSubmitError = useCallback((message: string): void => {
     const isExpired =
@@ -335,11 +338,11 @@ export default function ExamRoomPage(): React.JSX.Element {
         if (!hasNavigatedRef.current) {
           hasNavigatedRef.current = true;
           clearWallClockTimer(examId);
-          navigate('/student/lobby', { replace: true });
+          navigate(lobbyPath, { replace: true });
         }
       }, 6000);
     }
-  }, [examId, navigate]);
+  }, [examId, navigate, lobbyPath]);
 
 
   // ── useExamSession ───────────────────────────────────────────
@@ -493,9 +496,9 @@ export default function ExamRoomPage(): React.JSX.Element {
 
   useEffect((): void => {
     if (isNaN(examId) || examId <= 0) {
-      navigate('/student/lobby', { replace: true });
+      navigate(lobbyPath, { replace: true });
     }
-  }, [examId, navigate]);
+  }, [examId, navigate, lobbyPath]);
 
 
   // ── Timer colour ─────────────────────────────────────────────
@@ -557,7 +560,7 @@ export default function ExamRoomPage(): React.JSX.Element {
         <div className="flex gap-3">
           <button
             type      = "button"
-            onClick   = {() => navigate('/student/lobby', { replace: true })}
+            onClick   = {() => navigate(lobbyPath, { replace: true })}
             className = "flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white border border-[#D1D9E0] text-[#374151] text-base font-semibold hover:border-[#9CA3AF] transition-colors"
           >
             <ChevronLeft size={16} />

@@ -20,6 +20,7 @@ import React, {
 import { useNavigate } from 'react-router-dom';
 
 import axiosInstance from '../api/axiosInstance';
+import { isCandidate, TRAINING_LOGIN_PATH } from '../utils/participant';
 import type {
   AuthContextType,
   StaffMeResponse,
@@ -137,6 +138,7 @@ export function AuthProvider({ children }: AuthProviderProps): React.JSX.Element
 
   const logout = useCallback((redirectPath?: string): void => {
     const wasStudentSession: boolean = studentToken !== null;
+    const wasCandidateSession: boolean = isCandidate(student);
 
     const allKeys      = Object.keys(localStorage);
     const keysToRemove = allKeys.filter(
@@ -152,11 +154,11 @@ export function AuthProvider({ children }: AuthProviderProps): React.JSX.Element
     const destination = redirectPath !== undefined
       ? redirectPath
       : wasStudentSession
-        ? '/login/student'
+        ? (wasCandidateSession ? TRAINING_LOGIN_PATH : '/login/student')
         : '/login/staff';
 
     navigate(destination, { replace: true });
-  }, [navigate, studentToken]);
+  }, [navigate, studentToken, student]);
 
 
   // ── Derived state (unchanged) ─────────────────────────────────

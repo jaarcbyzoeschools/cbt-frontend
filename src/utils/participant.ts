@@ -44,3 +44,28 @@ export function storedSessionIsCandidate(): boolean {
     return false;
   }
 }
+
+
+/**
+ * A short tag naming whoever is logged in on this PC, e.g. "s42" for
+ * student 42 or "c7" for training candidate 7. Read from the session
+ * token itself, so it is right even after a page refresh.
+ * Returns "" if nobody is logged in.
+ */
+export function participantStorageTag(): string {
+  try {
+    const token = localStorage.getItem('cbt_student_token');
+    if (token === null) return '';
+    for (const part of token.split('.')) {
+      try {
+        const json: unknown = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')));
+        if (json !== null && typeof json === 'object') {
+          const p = json as { type?: unknown; student_id?: unknown; candidate_id?: unknown };
+          if (p.type === 'candidate' && p.candidate_id !== undefined) return `c${String(p.candidate_id)}`;
+          if (p.student_id !== undefined) return `s${String(p.student_id)}`;
+        }
+      } catch { /* not the payload part */ }
+    }
+  } catch { /* storage unavailable */ }
+  return '';
+}

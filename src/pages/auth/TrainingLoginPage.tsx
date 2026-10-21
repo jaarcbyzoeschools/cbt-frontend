@@ -74,7 +74,7 @@ export default function TrainingLoginPage(): React.JSX.Element {
       if (res.data.success) {
         loginStudent(res.data.token, res.data.student);
         setSucceeded(true);
-        setTimeout((): void => navigate(TRAINING_LOBBY_PATH, { replace: true }), 600);
+        setTimeout((): void => { void navigate(TRAINING_LOBBY_PATH, { replace: true }); }, 600);
       }
     } catch (thrown: unknown) {
       hasSubmittedRef.current = false;

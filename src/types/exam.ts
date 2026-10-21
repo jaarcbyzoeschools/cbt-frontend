@@ -219,10 +219,17 @@ export interface ActiveExamState {
 // localStorage key generators for exam session persistence.
 // Co-locating these here prevents key string drift between
 // useExamSession (writer) and ExamRoomPage (reader).
+// `owner` identifies who is sitting the exam on this PC (see
+// participantStorageTag in utils/participant.ts). Including it means
+// the next student on the same computer can never inherit the
+// previous student's saved answers for the same exam.
+const examKey = (examId: number, owner: string, name: string): string =>
+  owner ? `exam_${examId}_${owner}_${name}` : `exam_${examId}_${name}`;
+
 export const examStorageKeys = {
-  answers      : (examId: number): string => `exam_${examId}_answers`,
-  timeRemaining: (examId: number): string => `exam_${examId}_timeRemaining`,
-  questionIndex: (examId: number): string => `exam_${examId}_questionIndex`,
+  answers      : (examId: number, owner = ''): string => examKey(examId, owner, 'answers'),
+  timeRemaining: (examId: number, owner = ''): string => examKey(examId, owner, 'timeRemaining'),
+  questionIndex: (examId: number, owner = ''): string => examKey(examId, owner, 'questionIndex'),
 } as const;
 
 

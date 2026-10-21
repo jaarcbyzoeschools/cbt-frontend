@@ -25,7 +25,6 @@ import {
   Send,
   AlertCircle,
   Loader2,
-  X,
   WifiOff,
   RotateCcw,
   CheckCircle,
@@ -39,6 +38,7 @@ import { useAuth }         from '../../context/AuthContext';
 import type { Question }   from '../../types/exam';
 import { formatCountdown } from '../../utils/timeFormatter';
 import { lobbyPathFor }    from '../../utils/participant';
+import type { SubmitErrorKind, TimeSync } from '../../hooks/useExamSession';
 
 
 // ================================================================
@@ -68,57 +68,20 @@ function getOptionText(q: Question, key: OptionDef['key']): string {
 
 
 // ================================================================
-//  WALL-CLOCK TIMER HELPERS
+//  COUNTDOWN
+//  The server says how many seconds are left; this PC counts down
+//  from there using performance.now(), a stopwatch that ignores the
+//  PC's date and time. So a lab PC with the wrong clock (dead CMOS
+//  battery) still shows the right time and never auto-submits early.
 // ================================================================
 
-const lsKey = {
-  startedAt : (id: number): string => `exam_${id}_startedAt`,
-  durationMs: (id: number): string => `exam_${id}_durationMs`,
-};
-
-function initWallClockTimer(examId: number, durationSeconds: number, serverStartedAtIso: string | null): void {
-  if (durationSeconds <= 0) return;
-  localStorage.setItem(lsKey.durationMs(examId), String(durationSeconds * 1000));
-
-  // Reconcile against the SERVER's real session start whenever it's
-  // available — never just "initialize if empty." A student on a
-  // fresh terminal (or with cleared/stale localStorage) would
-  // otherwise get a full-duration countdown reset on their screen
-  // while the server's actual clock, anchored to the true original
-  // start, keeps running underneath. That mismatch is what caused
-  // a legitimate on-time submission to be rejected as expired.
-  if (serverStartedAtIso !== null) {
-    const serverStartedAtMs = new Date(serverStartedAtIso).getTime();
-    if (!isNaN(serverStartedAtMs)) {
-      localStorage.setItem(lsKey.startedAt(examId), String(serverStartedAtMs));
-      return;
-    }
-  }
-
-  // Server didn't provide a value (older backend, or a transient
-  // load issue) — fall back to the previous behavior: only set a
-  // local start time if one doesn't already exist.
-  const existingStart = localStorage.getItem(lsKey.startedAt(examId));
-  if (existingStart === null) {
-    localStorage.setItem(lsKey.startedAt(examId), String(Date.now()));
-  }
+function secondsLeftFrom(sync: TimeSync): number {
+  const elapsed = (performance.now() - sync.at) / 1000;
+  return Math.max(0, Math.floor(sync.seconds - elapsed));
 }
 
-function computeSecondsRemaining(examId: number, fallbackSeconds: number): number {
-  const startedAt  = parseInt(localStorage.getItem(lsKey.startedAt(examId))  ?? '0', 10);
-  const durationMs = parseInt(localStorage.getItem(lsKey.durationMs(examId)) ?? '0', 10);
-  if (startedAt <= 0 || durationMs <= 0) {
-    return fallbackSeconds > 0 ? fallbackSeconds : 3600;
-  }
-  const remainingMs = durationMs - (Date.now() - startedAt);
-  if (!isFinite(remainingMs)) return fallbackSeconds > 0 ? fallbackSeconds : 3600;
-  return Math.max(0, Math.floor(remainingMs / 1000));
-}
-
-function clearWallClockTimer(examId: number): void {
-  localStorage.removeItem(lsKey.startedAt(examId));
-  localStorage.removeItem(lsKey.durationMs(examId));
-}
+// How often to retry an automatic (time-up) submit that failed
+const AUTO_RETRY_MS = 15_000;
 
 
 // ================================================================
@@ -168,6 +131,49 @@ function SessionExpiredBanner({ message }: { message: string }): React.JSX.Eleme
           Please inform your teacher. Your progress has been saved. Returning to your dashboard shortly…
         </p>
       </div>
+    </div>
+  );
+}
+
+
+// ================================================================
+//  SUBMIT FAILED BANNER
+//  Stays on screen until the exam is submitted. Answers are safe
+//  (kept on this PC and autosaved on the server), so the student
+//  just needs to try again or call the invigilator.
+// ================================================================
+
+function SubmitFailedBanner({
+  message, kind, isSubmitting, timeUp, onRetry,
+}: {
+  message: string; kind: SubmitErrorKind; isSubmitting: boolean; timeUp: boolean; onRetry: () => void;
+}): React.JSX.Element {
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-4 bg-[#FEF2F2] border-b-2 border-[#FCA5A5] px-5 py-4">
+      <div className="w-10 h-10 rounded-xl bg-[#DC2626] flex items-center justify-center flex-shrink-0">
+        <AlertCircle size={20} className="text-white" />
+      </div>
+      <div className="flex-1 min-w-[220px]">
+        <p className="text-[#991B1B] text-base font-bold">Your exam has NOT been submitted yet</p>
+        <p className="text-[#991B1B] text-sm mt-0.5 leading-relaxed">{message}</p>
+        <p className="text-[#991B1B] text-sm mt-1 font-medium">
+          Your answers are saved.{' '}
+          {timeUp && kind === 'retryable'
+            ? 'Trying again automatically…'
+            : 'Stay on this page and press Try Again, or call the invigilator.'}
+        </p>
+      </div>
+      {kind !== 'blocked' && (
+        <button
+          type      = "button"
+          onClick   = {onRetry}
+          disabled  = {isSubmitting}
+          className = "flex items-center gap-2 px-5 py-2.5 rounded-xl text-base font-bold text-white bg-[#DC2626] hover:bg-[#B91C1C] transition-colors disabled:opacity-60"
+        >
+          {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <RotateCcw size={16} />}
+          {isSubmitting ? 'Submitting…' : 'Try Again'}
+        </button>
+      )}
     </div>
   );
 }
@@ -286,24 +292,16 @@ export default function ExamRoomPage(): React.JSX.Element {
 
   const [showSubmitDialog,  setShowSubmitDialog]  = useState<boolean>(false);
   const [submitErrorBanner, setSubmitErrorBanner] = useState<string | null>(null);
+  const [submitErrorKind,   setSubmitErrorKind]   = useState<SubmitErrorKind>('retryable');
   const [showBackWarning,   setShowBackWarning]   = useState<boolean>(false);
 
-  // Improvement 2: tracks whether the current error is a
-  // SESSION_EXPIRED rejection — those cannot be dismissed
-  const isExpiredErrorRef = useRef<boolean>(false);
-
-  // Wall-clock timer display state
-  const [secondsRemaining, setSecondsRemaining] = useState<number>(() => {
-    const stored = computeSecondsRemaining(examId, 0);
-    return stored > 0 ? stored : 3600;
-  });
+  // null until the server has told us how much time is left
+  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
 
   // Refs
   const hasNavigatedRef    = useRef<boolean>(false);
   const isSubmittingRef    = useRef<boolean>(false);
-  const timerIntervalRef   = useRef<ReturnType<typeof setInterval> | null>(null);
-  const durationSecondsRef = useRef<number>(0);
-  const timerReadyRef      = useRef<boolean>(false);
+  const autoSubmittedRef   = useRef<boolean>(false);
 
 
   // ── Stable callbacks ─────────────────────────────────────────
@@ -311,16 +309,14 @@ export default function ExamRoomPage(): React.JSX.Element {
   const handleSubmitSuccess = useCallback((result: unknown): void => {
     if (!hasNavigatedRef.current) {
       hasNavigatedRef.current = true;
-      clearWallClockTimer(examId);
       navigate(lobbyPath, { replace: true, state: { result } });
     }
-  }, [examId, navigate, lobbyPath]);
+  }, [navigate, lobbyPath]);
 
-  const handleSubmitError = useCallback((message: string): void => {
-    const isExpired =
-      message.toLowerCase().includes('expired') ||
-      message.toLowerCase().includes('rejected');
-    isExpiredErrorRef.current = isExpired;
+  const handleSubmitError = useCallback((message: string, kind: SubmitErrorKind): void => {
+    // Decided by the server's error code, never by guessing from text
+    const isExpired = kind === 'expired';
+    setSubmitErrorKind(kind);
     setSubmitErrorBanner(message);
     setShowSubmitDialog(false);
     setShowBackWarning(false);
@@ -337,12 +333,11 @@ export default function ExamRoomPage(): React.JSX.Element {
       setTimeout((): void => {
         if (!hasNavigatedRef.current) {
           hasNavigatedRef.current = true;
-          clearWallClockTimer(examId);
           navigate(lobbyPath, { replace: true });
         }
       }, 6000);
     }
-  }, [examId, navigate, lobbyPath]);
+  }, [navigate, lobbyPath]);
 
 
   // ── useExamSession ───────────────────────────────────────────
@@ -362,8 +357,7 @@ export default function ExamRoomPage(): React.JSX.Element {
     answers,
     answeredCount,
     flaggedIds,
-    durationSeconds,
-    startedAt,
+    timeSync,
     isLoadingQuestions,
     loadError,
     wasRestored,
@@ -384,79 +378,57 @@ export default function ExamRoomPage(): React.JSX.Element {
       : undefined;
 
 
-  // ── Keep durationSeconds ref current ─────────────────────────
+  // Always call the newest submitExam (it holds the latest answers),
+  // even from timers that were set up earlier.
+  const submitExamRef = useRef(submitExam);
+  submitExamRef.current = submitExam;
 
-  useEffect((): void => {
-    if (durationSeconds > 0) {
-      durationSecondsRef.current = durationSeconds;
-    }
-  }, [durationSeconds]);
-
-
-  // ── Timer init ───────────────────────────────────────────────
-
-  useEffect((): void => {
-    if (durationSeconds <= 0 || questions.length === 0) return;
-    if (timerReadyRef.current) return;
-    timerReadyRef.current = true;
-
-    initWallClockTimer(examId, durationSeconds, startedAt);
-
-    const remaining = computeSecondsRemaining(examId, durationSeconds);
-    setSecondsRemaining(remaining);
-  }, [examId, durationSeconds, questions.length, startedAt]);
+  const autoSubmit = useCallback((): void => {
+    if (isSubmittingRef.current || hasNavigatedRef.current || isSubmitted) return;
+    autoSubmittedRef.current = true;
+    isSubmittingRef.current = true;
+    void submitExamRef.current().finally((): void => { isSubmittingRef.current = false; });
+  }, [isSubmitted]);
 
 
-  // ── Countdown interval ───────────────────────────────────────
+  // ── Countdown ────────────────────────────────────────────────
+  // Runs only once the server has said how much time is left. Each
+  // tick works it out afresh from that figure, so it can't drift.
 
   useEffect((): (() => void) => {
-    if (durationSeconds <= 0) return (): void => undefined;
+    if (timeSync === null) return (): void => undefined;
 
-    if (timerIntervalRef.current !== null) {
-      clearInterval(timerIntervalRef.current);
-    }
-
-    timerIntervalRef.current = setInterval((): void => {
-      const remaining = computeSecondsRemaining(examId, durationSecondsRef.current);
+    const tick = (): void => {
+      const remaining = secondsLeftFrom(timeSync);
       setSecondsRemaining(remaining);
-
-      if (remaining <= 0 && !isSubmittingRef.current && !hasNavigatedRef.current) {
-        isSubmittingRef.current = true;
-        if (timerIntervalRef.current !== null) {
-          clearInterval(timerIntervalRef.current);
-          timerIntervalRef.current = null;
-        }
-        void submitExam();
-      }
-    }, 1000);
-
-    return (): void => {
-      if (timerIntervalRef.current !== null) {
-        clearInterval(timerIntervalRef.current);
-        timerIntervalRef.current = null;
-      }
+      if (remaining <= 0 && !autoSubmittedRef.current) autoSubmit();
     };
-  
-  }, [examId, durationSeconds > 0]);
+    tick();
+    const id = setInterval(tick, 1000);
+    return (): void => clearInterval(id);
+  }, [timeSync, autoSubmit]);
 
 
-  // ── Page visibility resync (timer only) ─────────────────────
-  // Note: tab-switch TRACKING is done inside useExamSession.
-  // This effect only resyncs the timer display on tab return.
+  // ── Time's up but the submit failed: keep retrying ───────────
 
   useEffect((): (() => void) => {
-    const handler = (): void => {
-      if (document.visibilityState !== 'visible') return;
-      const remaining = computeSecondsRemaining(examId, durationSecondsRef.current);
-      setSecondsRemaining(remaining);
-      if (remaining <= 0 && !isSubmittingRef.current && !hasNavigatedRef.current) {
-        isSubmittingRef.current = true;
-        void submitExam();
-      }
-    };
-    document.addEventListener('visibilitychange', handler);
-    return (): void => document.removeEventListener('visibilitychange', handler);
-  }, [examId, submitExam]);
+    const timeUp = secondsRemaining !== null && secondsRemaining <= 0;
+    if (!timeUp || submitErrorBanner === null || submitErrorKind !== 'retryable' || isSubmitted) {
+      return (): void => undefined;
+    }
+    const id = setInterval((): void => {
+      if (isSubmittingRef.current || hasNavigatedRef.current) return;
+      isSubmittingRef.current = true;
+      void submitExamRef.current().finally((): void => { isSubmittingRef.current = false; });
+    }, AUTO_RETRY_MS);
+    return (): void => clearInterval(id);
+  }, [secondsRemaining, submitErrorBanner, submitErrorKind, isSubmitted]);
+
+  const retrySubmit = useCallback((): void => {
+    if (isSubmittingRef.current || hasNavigatedRef.current) return;
+    isSubmittingRef.current = true;
+    void submitExamRef.current().finally((): void => { isSubmittingRef.current = false; });
+  }, []);
 
 
   // ── Back-button lock ─────────────────────────────────────────
@@ -469,12 +441,17 @@ export default function ExamRoomPage(): React.JSX.Element {
       window.history.pushState({ examGuard: true }, '', window.location.href);
       setShowBackWarning(true);
       isSubmittingRef.current = true;
-      setTimeout((): void => { void submitExam(); }, 800);
+      setTimeout((): void => {
+        void submitExamRef.current().finally((): void => {
+          isSubmittingRef.current = false;
+          setShowBackWarning(false);
+        });
+      }, 800);
     };
 
     window.addEventListener('popstate', handler);
     return (): void => window.removeEventListener('popstate', handler);
-  }, [submitExam]);
+  }, []);
 
 
   // ── Beforeunload ─────────────────────────────────────────────
@@ -505,6 +482,7 @@ export default function ExamRoomPage(): React.JSX.Element {
 
   type ColourState = 'normal' | 'warning' | 'danger' | 'expired';
   const colourState: ColourState =
+    secondsRemaining === null ? 'normal'  :
     secondsRemaining <= 0   ? 'expired' :
     secondsRemaining <= 120 ? 'danger'  :
     secondsRemaining <= 600 ? 'warning' :
@@ -611,7 +589,7 @@ export default function ExamRoomPage(): React.JSX.Element {
         {/* Countdown */}
         <div className={`flex items-center gap-2.5 px-4 py-2 rounded-xl border-2 transition-all ${timerBgCls}`}>
           <span className={`font-mono text-xl font-bold tabular-nums tracking-wider ${timerTextCls}`}>
-            {formatCountdown(secondsRemaining)}
+            {secondsRemaining === null ? '--:--:--' : formatCountdown(secondsRemaining)}
           </span>
         </div>
 
@@ -657,23 +635,28 @@ export default function ExamRoomPage(): React.JSX.Element {
       </div>
 
 
-      {submitErrorBanner !== null && isExpiredErrorRef.current && (
+      {submitErrorBanner !== null && submitErrorKind === 'expired' && (
         <SessionExpiredBanner message={submitErrorBanner} />
       )}
 
 
-      {/* ── REGULAR SUBMIT ERROR ─────────────────────────────── */}
-      {submitErrorBanner !== null && !isExpiredErrorRef.current && (
-        <div className="flex items-center gap-3 bg-[#FEF2F2] border-b border-[#FCA5A5] px-5 py-3">
-          <AlertCircle size={15} className="text-[#DC2626] flex-shrink-0" />
-          <p className="text-[#DC2626] text-sm font-medium flex-1">{submitErrorBanner}</p>
-          <button
-            type      = "button"
-            onClick   = {() => setSubmitErrorBanner(null)}
-            className = "text-[#DC2626]/60 hover:text-[#DC2626] transition-colors"
-          >
-            <X size={15} />
-          </button>
+      {/* ── SUBMIT FAILED ────────────────────────────────────── */}
+      {submitErrorBanner !== null && submitErrorKind !== 'expired' && !isSubmitted && (
+        <SubmitFailedBanner
+          message      = {submitErrorBanner}
+          kind         = {submitErrorKind}
+          isSubmitting = {isSubmitting}
+          timeUp       = {secondsRemaining !== null && secondsRemaining <= 0}
+          onRetry      = {retrySubmit}
+        />
+      )}
+
+
+      {/* ── TIME UP, SUBMITTING ──────────────────────────────── */}
+      {secondsRemaining === 0 && submitErrorBanner === null && !isSubmitted && (
+        <div role="status" className="flex items-center gap-3 bg-[#EFF6FF] border-b border-[#BFDBFE] px-5 py-3">
+          <Loader2 size={16} className="text-[#1D4ED8] animate-spin flex-shrink-0" />
+          <p className="text-[#1D4ED8] text-sm font-semibold">Time is up. Submitting your answers…</p>
         </div>
       )}
 

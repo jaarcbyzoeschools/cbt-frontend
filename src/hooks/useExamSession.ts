@@ -33,6 +33,7 @@ import type {
 } from '../types/exam';
 
 import { examStorageKeys } from '../types/exam';
+import { participantStorageTag } from '../utils/participant';
 
 
 // ================================================================
@@ -68,7 +69,12 @@ export interface UseExamSessionReturn {
 
   // Timer
   durationSeconds    : number;   // 0 until questions API responds
-  startedAt          : string | null; // server's real session start (ISO) — NEW
+  startedAt          : string | null; // server's real session start (ISO)
+  // Latest "seconds left" reading from the server, and the moment it
+  // arrived (performance.now()). The page counts down from this with
+  // the PC's stopwatch, so a wrong date/time on the PC has no effect.
+  // null until the server has answered.
+  timeSync           : TimeSync | null;
 
   // Tab-switch audit (Improvement 3)
   tabSwitches        : number;   // live count — increments on every tab hide
@@ -83,10 +89,22 @@ export interface UseExamSessionReturn {
   clearSession : () => void;
 }
 
+export interface TimeSync {
+  seconds: number;   // seconds left according to the server
+  at     : number;   // performance.now() when that was received
+}
+
+// What kind of submit failure happened — decides what the page shows.
+//   retryable : network / timeout / server error — try again
+//   closed    : the paper was closed by the exam officer
+//   expired   : old backend rejected it as time-expired
+//   blocked   : not allowed (e.g. paper locked) — nothing to retry
+export type SubmitErrorKind = 'retryable' | 'closed' | 'expired' | 'blocked';
+
 export interface UseExamSessionConfig {
   examId          : number;
   onSubmitSuccess : (result: ExamResult) => void;
-  onSubmitError   : (message: string) => void;
+  onSubmitError   : (message: string, kind: SubmitErrorKind) => void;
   pauseTimer      : () => void;
 }
 
@@ -122,18 +140,48 @@ interface QuestionsSuccessResponse {
     tab_switches: number;
     // Answers the server autosaved earlier (absent on older backends)
     saved_answers?: AnswerMap;
+    // Seconds left on the server clock (absent on older backends)
+    seconds_remaining?: number;
   };
 }
+
+interface SecondsRemainingBody { seconds_remaining?: unknown }
 
 // How long to wait after the last answer change before autosaving,
 // and how often to retry if a save failed (network blip, etc).
 const AUTOSAVE_DEBOUNCE_MS = 2_500;
 const AUTOSAVE_RETRY_MS    = 20_000;
 
+// Re-check the time with the server this often (and whenever the
+// student comes back to the tab).
+const TIME_RESYNC_MS = 60_000;
+
+// Submitting: wait longer than normal requests, and retry a couple of
+// times on network/server errors before telling the student. Safe to
+// retry — the server ignores a second submit of the same exam.
+const SUBMIT_TIMEOUT_MS = 45_000;
+const SUBMIT_ATTEMPTS   = 3;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function readSeconds(body: unknown): number | null {
+  if (body === null || typeof body !== 'object') return null;
+  const v = (body as SecondsRemainingBody).seconds_remaining;
+  return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : null;
+}
+
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function extractMessage(thrown: unknown): string {
+  // Prefer the server's own explanation when there is one
+  const data = extractAxiosData<{ message?: unknown }>(thrown);
+  if (data !== null && typeof data.message === 'string' && data.message.trim() !== '') {
+    return data.message;
+  }
+  if (extractAxiosStatus(thrown) === null) {
+    return 'Cannot reach the exam server. Check the network cable, then try again.';
+  }
   if (thrown instanceof Error) return thrown.message;
   return 'An unexpected error occurred. Please try again.';
 }
@@ -180,12 +228,39 @@ export function useExamSession({
   // Improvement 3: tab-switch counter
   const [tabSwitches, setTabSwitches] = useState<number>(0);
 
+  // Who is sitting this exam on this PC — saved answers are kept per
+  // person, so the next student on the same computer starts clean.
+  const [owner] = useState<string>(() => {
+    const tag = participantStorageTag();
+    // Remove copies saved by older versions (shared by everyone on this PC)
+    try {
+      localStorage.removeItem(`exam_${examId}_answers`);
+      localStorage.removeItem(`exam_${examId}_questionIndex`);
+      localStorage.removeItem(`exam_${examId}_timeRemaining`);
+      localStorage.removeItem(`exam_${examId}_startedAt`);
+      localStorage.removeItem(`exam_${examId}_durationMs`);
+    } catch { /* storage unavailable */ }
+    return tag;
+  });
+
   // Persistent state (crash recovery)
   const [currentIndex, setCurrentIndex, removeIndexKey] =
-    useLocalStorage<number>(examStorageKeys.questionIndex(examId), 0);
+    useLocalStorage<number>(examStorageKeys.questionIndex(examId, owner), 0);
 
   const [answers, setAnswers, removeAnswerKey] =
-    useLocalStorage<AnswerMap>(examStorageKeys.answers(examId), {});
+    useLocalStorage<AnswerMap>(examStorageKeys.answers(examId, owner), {});
+
+  // Always the latest answers — used by submit, so a submit fired by
+  // the timer never sends an out-of-date copy.
+  const answersRef = useRef<AnswerMap>(answers);
+  answersRef.current = answers;
+
+  const [timeSync, setTimeSync] = useState<TimeSync | null>(null);
+  const timeSyncStoppedRef = useRef<boolean>(false);
+  const applyServerSeconds = useCallback((seconds: number | null): void => {
+    if (seconds === null) return;
+    setTimeSync({ seconds, at: performance.now() });
+  }, []);
 
   // Session-only state
   const [flaggedIds,   setFlaggedIds]   = useState<Set<number>>(new Set<number>());
@@ -215,7 +290,11 @@ export function useExamSession({
   //  QUESTION LOADING
   // ================================================================
 
-  useEffect((): void => {
+  useEffect((): (() => void) => {
+    // Ignore the reply of a load that has been superseded (React dev
+    // mode runs this effect twice; a late failure from the first run
+    // must not replace questions that already loaded).
+    let cancelled = false;
     const loadQuestions = async (): Promise<void> => {
       try {
         // Detect crash recovery before fetching
@@ -228,6 +307,7 @@ export function useExamSession({
         const response = await axiosInstance.get<QuestionsSuccessResponse>(
           `/api/exams/${examId}/questions`
         );
+        if (cancelled) return;
 
         if (response.data.success) {
           // Improvement 1: Server returns questions in the stable
@@ -235,6 +315,11 @@ export function useExamSession({
           // We just use them directly — no client shuffle needed.
           setQuestions(response.data.questions);
           setDurationMinutes(response.data.exam.duration_minutes);
+          // Start the countdown from the server's figure. Older backends
+          // don't send it — fall back to the full duration.
+          applyServerSeconds(
+            readSeconds(response.data.session) ?? response.data.exam.duration_minutes * 60
+          );
 
           // Improvement 3: Read tab_switches from the session
           // object so crash-recovered students see the correct
@@ -275,6 +360,7 @@ export function useExamSession({
         }
 
       } catch (thrown: unknown) {
+        if (cancelled) return;
         const status = extractAxiosStatus(thrown);
 
         // 409 — already submitted, redirect to result
@@ -285,9 +371,9 @@ export function useExamSession({
             data.already_submitted === true &&
             data.result !== undefined
           ) {
-            localStorage.removeItem(examStorageKeys.answers(examId));
-            localStorage.removeItem(examStorageKeys.questionIndex(examId));
-            localStorage.removeItem(examStorageKeys.timeRemaining(examId));
+            localStorage.removeItem(examStorageKeys.answers(examId, owner));
+            localStorage.removeItem(examStorageKeys.questionIndex(examId, owner));
+            localStorage.removeItem(examStorageKeys.timeRemaining(examId, owner));
             onSubmitSuccessRef.current(data.result);
           } else {
             setLoadError(
@@ -301,11 +387,12 @@ export function useExamSession({
         setLoadError(extractMessage(thrown));
 
       } finally {
-        setIsLoadingQuestions(false);
+        if (!cancelled) setIsLoadingQuestions(false);
       }
     };
 
     void loadQuestions();
+    return (): void => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examId]);
 
@@ -338,18 +425,20 @@ export function useExamSession({
           chosen_option: chosenOption,
         })
       );
-      await axiosInstance.patch(`/api/exams/${examId}/session/answers`, { answers: payload });
+      const res = await axiosInstance.patch(`/api/exams/${examId}/session/answers`, { answers: payload });
       lastSavedRef.current = snapshot;
+      applyServerSeconds(readSeconds(res.data));
     } catch (thrown: unknown) {
       // 409 = time is up or session closed: stop trying.
       // 404 = backend without the autosave route yet: stop trying.
       const status = extractAxiosStatus(thrown);
       if (status === 409 || status === 404) autosaveStoppedRef.current = true;
+      if (status === 409) applyServerSeconds(readSeconds(extractAxiosData(thrown)));
       // Anything else (network, 500) is retried by the interval below.
     } finally {
       isSavingRef.current = false;
     }
-  }, [answers, examId, isSubmitted, questions.length]);
+  }, [answers, examId, isSubmitted, questions.length, applyServerSeconds]);
 
   // Save shortly after each change
   useEffect((): (() => void) => {
@@ -362,6 +451,34 @@ export function useExamSession({
     const id = window.setInterval((): void => { void saveAnswersToServer(); }, AUTOSAVE_RETRY_MS);
     return (): void => { window.clearInterval(id); };
   }, [saveAnswersToServer]);
+
+
+  // ================================================================
+  //  TIME RESYNC
+  //  Asks the server how much time is left every minute and whenever
+  //  the student returns to this tab, so the countdown can't drift.
+  // ================================================================
+
+  const resyncTime = useCallback(async (): Promise<void> => {
+    if (questions.length === 0 || isSubmitted || timeSyncStoppedRef.current) return;
+    try {
+      const res = await axiosInstance.get(`/api/exams/${examId}/session/time`);
+      applyServerSeconds(readSeconds(res.data));
+    } catch (thrown: unknown) {
+      // 404 = older backend without this route: keep the local countdown
+      if (extractAxiosStatus(thrown) === 404) timeSyncStoppedRef.current = true;
+    }
+  }, [examId, isSubmitted, questions.length, applyServerSeconds]);
+
+  useEffect((): (() => void) => {
+    const id = window.setInterval((): void => { void resyncTime(); }, TIME_RESYNC_MS);
+    const onVisible = (): void => { if (document.visibilityState === 'visible') void resyncTime(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return (): void => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [resyncTime]);
 
 
   // ================================================================
@@ -458,16 +575,14 @@ export function useExamSession({
   const clearSession = useCallback((): void => {
     removeAnswerKey();
     removeIndexKey();
-    localStorage.removeItem(examStorageKeys.timeRemaining(examId));
-  }, [removeAnswerKey, removeIndexKey, examId]);
+    localStorage.removeItem(examStorageKeys.timeRemaining(examId, owner));
+  }, [removeAnswerKey, removeIndexKey, examId, owner]);
 
 
   // ── submitExam ───────────────────────────────────────────────
-  // Zero arguments — backend is fully authoritative for grading.
-  // Handles three error cases:
-  //   403 + SESSION_EXPIRED — time window exceeded (Improvement 2)
-  //   409                   — already submitted (race condition)
-  //   all others            — network/server error
+  // Always sends the LATEST answers (answersRef), retries network /
+  // server errors automatically, and reports what kind of failure it
+  // was so the page can show the right message.
 
   const submitExam = useCallback(async (): Promise<void> => {
     if (isSubmittingRef.current || isSubmitted) return;
@@ -477,73 +592,92 @@ export function useExamSession({
     setIsSubmitting(true);
     setSubmitError(null);
 
-    const payload: StudentAnswer[] = Object.entries(answers).map(
+    const payload: StudentAnswer[] = Object.entries(answersRef.current).map(
       ([questionIdStr, chosenOption]: [string, AnswerOption]): StudentAnswer => ({
         question_id  : Number(questionIdStr),
         chosen_option: chosenOption,
       })
     );
 
-    try {
-      const response = await axiosInstance.post<ExamSubmitResponse>(
-        `/api/exams/${examId}/submit`,
-        { answers: payload }
-      );
-
-      if (response.data.success) {
-        const examResult = response.data.result;
-        setResult(examResult);
-        setIsSubmitted(true);
-        clearSession();
-        onSubmitSuccessRef.current(examResult);
-      } else {
-        const message = 'Submission was rejected by the server. Please try again.';
-        setSubmitError(message);
-        onSubmitErrorRef.current(message);
-      }
-
-    } catch (thrown: unknown) {
-      const status = extractAxiosStatus(thrown);
-
-      // ── IMPROVEMENT 2: SESSION_EXPIRED ────────────────────────
-      // 403 with code SESSION_EXPIRED means the server rejected
-      // the submission because elapsed time > duration + grace.
-      // We clear the session (student cannot retry) and surface
-      // the server's message so the teacher can investigate.
-      if (status === 403) {
-        const data = extractAxiosData<SessionExpiredResponse>(thrown);
-        if (data?.code === 'SESSION_EXPIRED') {
-          clearSession();
-          setIsSubmitted(true);   // Block any retry attempt
-          const message = data.message ?? 'Your exam time has expired. This submission was rejected.';
-          setSubmitError(message);
-          onSubmitErrorRef.current(message);
-          return;
-        }
-      }
-
-      // ── Already submitted (race: timer + manual both fired) ───
-      if (status === 409) {
-        const data = extractAxiosData<AlreadySubmittedResponse>(thrown);
-        if (data !== null && data.result !== undefined) {
-          setResult(data.result);
-          setIsSubmitted(true);
-          clearSession();
-          onSubmitSuccessRef.current(data.result);
-          return;
-        }
-      }
-
-      // ── Generic error ─────────────────────────────────────────
-      const message = extractMessage(thrown);
+    const fail = (message: string, kind: SubmitErrorKind): void => {
       setSubmitError(message);
-      onSubmitErrorRef.current(message);
+      onSubmitErrorRef.current(message, kind);
+    };
 
+    try {
+      for (let attempt = 1; attempt <= SUBMIT_ATTEMPTS; attempt++) {
+        try {
+          const response = await axiosInstance.post<ExamSubmitResponse>(
+            `/api/exams/${examId}/submit`,
+            { answers: payload },
+            { timeout: SUBMIT_TIMEOUT_MS }
+          );
+
+          if (response.data.success) {
+            const examResult = response.data.result;
+            setResult(examResult);
+            setIsSubmitted(true);
+            clearSession();
+            onSubmitSuccessRef.current(examResult);
+          } else {
+            fail(response.data.message || 'The server did not accept the submission. Please try again.', 'retryable');
+          }
+          return;
+
+        } catch (thrown: unknown) {
+          const status = extractAxiosStatus(thrown);
+
+          // Network error, timeout, or server error: try again shortly
+          const transient = status === null || status >= 500 || status === 408 || status === 429;
+          if (transient && attempt < SUBMIT_ATTEMPTS) {
+            await sleep(1500 * attempt);
+            continue;
+          }
+
+          // Old backend: rejected as time-expired
+          if (status === 403) {
+            const data = extractAxiosData<SessionExpiredResponse>(thrown);
+            if (data?.code === 'SESSION_EXPIRED') {
+              clearSession();
+              setIsSubmitted(true);   // Block any retry attempt
+              fail(data.message ?? 'Your exam time has expired. This submission was rejected.', 'expired');
+              return;
+            }
+          }
+
+          // Already submitted (e.g. timer and button fired together)
+          if (status === 409) {
+            const data = extractAxiosData<AlreadySubmittedResponse>(thrown);
+            if (data !== null && data.result !== undefined) {
+              setResult(data.result);
+              setIsSubmitted(true);
+              clearSession();
+              onSubmitSuccessRef.current(data.result);
+              return;
+            }
+          }
+
+          if (status === 404) {
+            fail(
+              'This paper has been closed by the exam officer, so it can\'t be submitted right now. ' +
+              'Your answers are saved. Please call the invigilator.',
+              'closed'
+            );
+            return;
+          }
+          if (status === 403 || status === 400) {
+            fail(extractMessage(thrown), 'blocked');
+            return;
+          }
+          fail(extractMessage(thrown), 'retryable');
+          return;
+        }
+      }
     } finally {
       setIsSubmitting(false);
       isSubmittingRef.current = false;
     }
-  }, [answers, examId, isSubmitted, clearSession]);
+  }, [examId, isSubmitted, clearSession]);
 
 
   // ================================================================
@@ -567,6 +701,7 @@ export function useExamSession({
     wasRestored,
     durationSeconds,
     startedAt,
+    timeSync,
     tabSwitches,
     selectAnswer,
     navigateTo,
